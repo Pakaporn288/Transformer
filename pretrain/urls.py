@@ -1,10 +1,12 @@
 from django import views
 from django.urls import path
-
-from .views import home  # นำเข้า view ที่ต้องการ
+from . import views
 
 urlpatterns =[
-    path("", home , name="home"),
-    path('pertrain/', views.pertrain_view, name='pertrain'),
+    path("", views.home , name="home"),
+    path('training-progress/', views.training_progress, name='training_progress'),
+    path('train-form/', views.train_form, name='train_form'),
+    
+
 
 ]

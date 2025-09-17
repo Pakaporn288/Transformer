@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en" x-data="trainingUI()" :class="darkMode ? 'dark' : ''">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Model Training Dashboard</title>
+  <!-- Tailwind CSS CDN (v3) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    // Tailwind config for fancy gradients & dark mode classes
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          animation: {
+            shimmer: 'shimmer 2.2s linear infinite',
+          },
+          keyframes: {
+            shimmer: {
+              '0%': { backgroundPosition: '200% 0' },
+              '100%': { backgroundPosition: '-200% 0' },
+            },
+          },
+        }
+      }
+    };
+  </script>
+  <!-- Alpine.js -->
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <!-- HTMX -->
+  <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+  <!-- HTMX extension (for auto-interval polling control) -->
+  <script src="https://unpkg.com/htmx.org/dist/ext/class-tools.js"></script>
+  <style>
+    /* Radial progress using conic-gradient, bound via style attr */
+    .radial {
+      --size: 140px;
+      width: var(--size);
+      height: var(--size);
+      border-radius: 9999px;
+      background:
+        conic-gradient(
+          theme('colors.blue.500') calc(var(--val) * 1%),
+          theme('colors.gray.200') 0
+        );
+      position: relative;
+    }
+    .radial::after { /* inner cutout */
+      content: '';
+      position: absolute; inset: 8px;
+      background: white; border-radius: 9999px;
+    }
+    .dark .radial { background:
+      conic-gradient(
+        theme('colors.blue.400') calc(var(--val) * 1%),
+        theme('colors.slate.700') 0
+      );
+    }
+    .dark .radial::after { background: rgb(15, 23, 42); }
+  </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-slate-50 via-indigo-50 to-sky-50 dark:from-slate-900 dark:via-slate-900 dark:to-slate-950 text-slate-800 dark:text-slate-100">
+  <!-- Top Bar -->
+  <header class="sticky top-0 z-30 backdrop-blur supports-[backdrop-filter]:bg-white/60 dark:supports-[backdrop-filter]:bg-slate-900/50 shadow-sm">
+    <div class="mx-auto max-w-7xl px-4 py-3 flex items-center gap-3">
+      <div class="w-2 h-6 rounded bg-gradient-to-b from-blue-600 to-indigo-600"></div>
+      <h1 class="text-lg font-semibold tracking-tight">Training Dashboard</h1>
+      <span class="text-xs ml-2 px-2 py-0.5 rounded-full bg-blue-600/10 text-blue-700 dark:text-blue-300">Tailwind + Alpine + HTMX</span>
+      <div class="ml-auto flex items-center gap-2">
+        <button @click="darkMode = !darkMode" class="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-sm">
+          <span x-show="!darkMode">🌙 Dark</span>
+          <span x-show="darkMode">☀️ Light</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-7xl p-4 md:p-6 lg:p-8">
+    <!-- Controls + Summary -->
+    <section class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <!-- Controls Card -->
+      <div class="lg:col-span-2">
+        <div class="rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white/70 dark:bg-slate-900/50 shadow-sm">
+          <div class="p-5 border-b border-slate-200/70 dark:border-slate-800 flex items-center justify-between">
+            <h2 class="font-semibold">Training Controls</h2>
+            <span class="text-xs text-slate-500">Server-driven progress via <span class="font-mono">/train/status</span></span>
+          </div>
+          <form id="train-form" class="p-5 grid grid-cols-1 sm:grid-cols-2 gap-4"
+                hx-post="/train/start" hx-target="#toasts" hx-swap="beforeend" hx-indicator="#start-indicator"
+                @submit.prevent="startPolling()" >
+            <div>
+              <label class="text-sm text-slate-500">Model</label>
+              <select name="model" class="mt-1 w-full rounded-xl border-slate-200 dark:border-slate-700 bg-white/60 dark:bg-slate-900/60">
+                <option value="mobilenet_v2">MobileNetV2</option>
+                <option value="resnet50">ResNet-50</option>
+                <option value="efficientnet_b0">EfficientNet-B0</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-sm text-slate-500">Epochs</label>
+              <input type="number" name="epochs" min="1" max="500" value="20"
+                     class="mt-1 w-full rounded-xl border-slate-200 dark:border-slate-700 bg-white/60 dark:bg-slate-900/60" />
+            </div>
+            <div>
+              <label class="text-sm text-slate-500">Batch Size</label>
+              <input type="number" name="batch_size" min="1" max="4096" value="32"
+                     class="mt-1 w-full rounded-xl border-slate-200 dark:border-slate-700 bg-white/60 dark:bg-slate-900/60" />
+            </div>
+            <div>
+              <label class="text-sm text-slate-500">Learning Rate</label>
+              <input type="number" step="0.0001" name="lr" value="0.001"
+                     class="mt-1 w-full rounded-xl border-slate-200 dark:border-slate-700 bg-white/60 dark:bg-slate-900/60" />
+            </div>
+
+            <div class="sm:col-span-2 flex items-center gap-3 pt-2">
+              <button type="submit" class="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow hover:brightness-110">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                Start Training
+                <span id="start-indicator" class="htmx-indicator ml-2 animate-pulse">…</span>
+              </button>
+              <button type="button" @click="stopTraining" hx-post="/train/stop" hx-trigger="click" hx-target="#toasts" hx-swap="beforeend"
+                      class="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-rose-300/50 text-rose-600 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-900/30">
+                ⏹ Stop
+              </button>
+              <button type="button" @click="resetUI" class="ml-auto text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-200">Reset UI</button>
+            </div>
+
+            <p class="sm:col-span-2 text-xs text-slate-500">
+              Endpoints to implement in your server (Django/Flask/FastAPI):
+              <code class="font-mono">POST /train/start</code>,
+              <code class="font-mono">GET /train/status</code>,
+              <code class="font-mono">GET /train/logs</code>,
+              <code class="font-mono">POST /train/stop</code>.
+            </p>
+          </form>
+        </div>
+      </div>
+
+      <!-- Status Card -->
+      <div class="space-y-6">
+        <div class="rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white/70 dark:bg-slate-900/50 shadow-sm p-5">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="font-semibold">Training Status</h3>
+            <span class="text-xs px-2 py-0.5 rounded-full" :class="stateBadgeClass">{{ state }}</span>
+          </div>
+
+          <div class="flex items-center gap-6">
+            <!-- Radial -->
+            <div class="radial shrink-0" :style="`--val:${progress}`">
+              <div class="absolute inset-0 grid place-items-center">
+                <div class="text-center">
+                  <div class="text-2xl font-bold tabular-nums">{{ progress.toFixed(0) }}%</div>
+                  <div class="text-[11px] text-slate-500">complete</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Linear progress + metrics -->
+            <div class="flex-1">
+              <div class="h-3 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                <div id="progress-bar" class="h-3 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 transition-all duration-500" :style="`width:${progress}%`"></div>
+              </div>
+              <div class="mt-2 flex items-center justify-between text-xs text-slate-500">
+                <div>Epoch: <span class="font-mono text-slate-700 dark:text-slate-200">{{ epoch }}</span>/<span class="font-mono">{{ maxEpoch }}</span></div>
+                <div>ETA: <span class="font-mono">{{ eta }}</span></div>
+                <div>LR: <span class="font-mono">{{ lr }}</span></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- htmx poller that fetches server status JSON->HTML fragment -->
+          <div
+            id="status-fragment"
+            hx-get="/train/status"
+            hx-trigger="load, every 1000ms"
+            hx-swap="outerHTML"
+            hx-target="#status-fragment"
+            class="hidden"
+          ></div>
+
+          <!-- When the server returns a fragment, you can embed hidden fields like: 
+            <div id="status-fragment" hx-swap-oob="true">
+              <span data-k="progress" data-v="42"></span>
+              <span data-k="epoch" data-v="3"></span>
+              <span data-k="max_epoch" data-v="20"></span>
+              <span data-k="eta" data-v="00:12:34"></span>
+              <span data-k="lr" data-v="0.001"></span>
+              <span data-k="state" data-v="Running"></span>
+            </div>
+          -->
+
+          <div class="mt-4 grid grid-cols-2 gap-3 text-xs">
+            <div class="rounded-xl border border-emerald-200/50 dark:border-emerald-900/40 bg-emerald-50/60 dark:bg-emerald-900/20 px-3 py-2">
+              <div class="text-emerald-700 dark:text-emerald-300">Train Acc</div>
+              <div class="font-mono">{{ trainAcc.toFixed(3) }}</div>
+            </div>
+            <div class="rounded-xl border border-sky-200/50 dark:border-sky-900/40 bg-sky-50/60 dark:bg-sky-900/20 px-3 py-2">
+              <div class="text-sky-700 dark:text-sky-300">Val Acc</div>
+              <div class="font-mono">{{ valAcc.toFixed(3) }}</div>
+            </div>
+            <div class="rounded-xl border border-rose-200/50 dark:border-rose-900/40 bg-rose-50/60 dark:bg-rose-900/20 px-3 py-2">
+              <div class="text-rose-700 dark:text-rose-300">Train Loss</div>
+              <div class="font-mono">{{ trainLoss.toFixed(3) }}</div>
+            </div>
+            <div class="rounded-xl border border-amber-200/50 dark:border-amber-900/40 bg-amber-50/60 dark:bg-amber-900/20 px-3 py-2">
+              <div class="text-amber-700 dark:text-amber-300">Val Loss</div>
+              <div class="font-mono">{{ valLoss.toFixed(3) }}</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Checkpoints / Actions -->
+        <div class="rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white/70 dark:bg-slate-900/50 shadow-sm p-5">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="font-semibold">Artifacts</h3>
+            <button class="text-xs px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800"
+                    hx-get="/train/checkpoints" hx-target="#artifacts" hx-swap="innerHTML">Refresh</button>
+          </div>
+          <div id="artifacts" class="text-sm text-slate-600 dark:text-slate-300">
+            <div class="animate-shimmer bg-[linear-gradient(110deg,rgba(0,0,0,0)_40%,rgba(0,0,0,.06)_50%,rgba(0,0,0,0)_60%)] bg-[length:200%_100%] h-8 rounded-lg"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Logs -->
+    <section class="mt-6">
+      <div class="rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white/70 dark:bg-slate-900/50 shadow-sm">
+        <div class="p-5 border-b border-slate-200/70 dark:border-slate-800 flex items-center gap-3">
+          <h2 class="font-semibold">Training Logs</h2>
+          <span class="text-xs text-slate-500">live tail from <code class="font-mono">/train/logs</code></span>
+          <div class="ml-auto flex items-center gap-2 text-xs">
+            <button class="px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800"
+                    hx-get="/train/logs" hx-trigger="click, every 1500ms" hx-target="#log-body" hx-swap="beforeend">Follow</button>
+            <button class="px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800" @click="clearLogs">Clear</button>
+          </div>
+        </div>
+        <div id="log-body" class="p-5 font-mono text-[13px] leading-6 h-[360px] overflow-auto whitespace-pre-wrap">
+          <div class="text-slate-400">Waiting for logs…</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Toasts (htmx targets) -->
+    <div id="toasts" class="fixed bottom-6 right-6 space-y-3 z-50"></div>
+  </main>
+
+  <!-- Toast template -->
+  <template id="toastTpl">
+    <div class="rounded-xl border border-slate-200 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 shadow-xl backdrop-blur px-4 py-3 flex items-start gap-3">
+      <div class="mt-0.5">🔔</div>
+      <div>
+        <div class="text-sm font-medium">Notification</div>
+        <div class="text-xs text-slate-500"><span data-toast-msg>Action completed</span></div>
+      </div>
+      <button class="ml-6 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200" onclick="this.closest('.toast')?.remove()">✕</button>
+    </div>
+  </template>
+
+  <script>
+    // Alpine component state
+    function trainingUI() {
+      return {
+        darkMode: window.matchMedia('(prefers-color-scheme: dark)').matches,
+        state: 'Idle',
+        progress: 0,
+        epoch: 0,
+        maxEpoch: 20,
+        eta: '--:--:--',
+        lr: 0.001,
+        trainAcc: 0.000,
+        valAcc: 0.000,
+        trainLoss: 0.000,
+        valLoss: 0.000,
+
+        get stateBadgeClass() {
+          return {
+            'bg-slate-200 text-slate-700 dark:bg-slate-800/70 dark:text-slate-200': this.state === 'Idle',
+            'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300': this.state === 'Running',
+            'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300': this.state === 'Completed',
+            'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300': this.state === 'Stopped',
+          }
+        },
+
+        resetUI() {
+          Object.assign(this, { state:'Idle', progress:0, epoch:0, eta:'--:--:--', trainAcc:0, valAcc:0, trainLoss:0, valLoss:0 });
+          document.querySelector('#log-body').innerHTML = '<div class="text-slate-400">Waiting for logs…</div>';
+        },
+        clearLogs() { document.querySelector('#log-body').innerHTML = ''; },
+        stopTraining() { this.state = 'Stopped'; },
+
+        startPolling() {
+          this.state = 'Running';
+          // nothing else required: htmx pollers are already set up
+        }
+      }
+    }
+
+    // OPTIONAL: If your /train/status endpoint returns a small HTML fragment with key/value pairs
+    // (see commented example above), you can use this handler to parse it and update Alpine state.
+    document.body.addEventListener('htmx:afterSwap', (ev) => {
+      const frag = document.querySelector('#status-fragment');
+      if (!frag) return;
+      const items = frag.querySelectorAll('[data-k]');
+      if (!items.length) return;
+      const $root = document.querySelector('[x-data]')?.__x?.$data;
+      if (!$root) return;
+      items.forEach(el => {
+        const k = el.getAttribute('data-k');
+        const v = el.getAttribute('data-v');
+        switch (k) {
+          case 'progress': $root.progress = Number(v) || 0; break;
+          case 'epoch': $root.epoch = Number(v) || 0; break;
+          case 'max_epoch': $root.maxEpoch = Number(v) || 0; break;
+          case 'eta': $root.eta = v || '--:--:--'; break;
+          case 'lr': $root.lr = Number(v) || 0; break;
+          case 'train_acc': $root.trainAcc = Number(v) || 0; break;
+          case 'val_acc': $root.valAcc = Number(v) || 0; break;
+          case 'train_loss': $root.trainLoss = Number(v) || 0; break;
+          case 'val_loss': $root.valLoss = Number(v) || 0; break;
+          case 'state': $root.state = v || 'Running'; break;
+        }
+      });
+    });
+
+    // Utility to push a toast from server via htmx or client
+    window.pushToast = function (msg) {
+      const tpl = document.getElementById('toastTpl');
+      const node = tpl.content.firstElementChild.cloneNode(true);
+      node.classList.add('toast');
+      node.querySelector('[data-toast-msg]').textContent = msg;
+      document.getElementById('toasts').appendChild(node);
+      setTimeout(() => node.remove(), 5000);
+    };
+  </script>
+
+  <!--
+  =============================================
+  Backend Contract (suggested, minimal):
+  =============================================
+  1) POST /train/start
+     - Accepts form fields: model, epochs, batch_size, lr
+     - Starts a background job. Returns a small toast HTML snippet (to #toasts)
+       Example response:
+       <div class="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">Training started</div>
+
+  2) GET /train/status
+     - Returns a tiny HTML fragment with data-* attributes as below (IDs important)
+       <div id="status-fragment">
+         <span data-k="progress" data-v="42"></span>
+         <span data-k="epoch" data-v="3"></span>
+         <span data-k="max_epoch" data-v="20"></span>
+         <span data-k="eta" data-v="00:12:34"></span>
+         <span data-k="lr" data-v="0.001"></span>
+         <span data-k="train_acc" data-v="0.823"></span>
+         <span data-k="val_acc" data-v="0.801"></span>
+         <span data-k="train_loss" data-v="0.455"></span>
+         <span data-k="val_loss" data-v="0.498"></span>
+         <span data-k="state" data-v="Running"></span>
+       </div>
+
+  3) GET /train/logs
+     - Returns preformatted text or <div> lines. HTMX appends every 1.5s to #log-body.
+
+  4) POST /train/stop
+     - Signals the background worker to stop; responds with a toast snippet.
+  -->
+</body>
+</html>

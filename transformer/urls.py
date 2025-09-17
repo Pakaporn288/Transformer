@@ -16,9 +16,10 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
-from pretrain import views  # นำเข้า views จากแอป pretrain
+from pretrain import views
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('pertrain/', views.pertrain_view, name='pertrain'),
-]        
+    path('', views.home, name='home'),
+    path('pretrain/', include('pretrain.urls')),  # เพิ่มบรรทัดนี้
+]
