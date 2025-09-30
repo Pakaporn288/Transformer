@@ -9,142 +9,104 @@ from mcp.client.stdio import stdio_client
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-load_dotenv()  # load environment variables from .env
+load_dotenv()
 
 class MCPClient:
     def __init__(self):
-        # Initialize session and client objects
         self.session: Optional[ClientSession] = None
         self.exit_stack = AsyncExitStack()
         
-        # ตั้งค่า Gemini API Key และสร้างโมเดล
-        api_key = os.getenv("GEMINI_API_KEY")
+        api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
         if not api_key:
-            raise ValueError("GEMINI_API_KEY is not set in the .env file")
+            raise ValueError("API Key not found in .env file")
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-1.5-flash')
+
+        # ใช้โมเดลตัวเดียวที่เสถียรที่สุด
+        self.model = genai.GenerativeModel('models/gemini-pro-latest')
 
     async def connect_to_server(self, server_script_path: str):
-        """Connect to an MCP server"""
-        is_python = server_script_path.endswith('.py')
-        is_js = server_script_path.endswith('.js')
-        if not (is_python or is_js):
-            raise ValueError("Server script must be a .py or .js file")
-
-        command = "python" if is_python else "node"
+        command = "python"
         server_params = StdioServerParameters(
             command=command,
             args=[server_script_path],
             env=None
         )
-
         stdio_transport = await self.exit_stack.enter_async_context(stdio_client(server_params))
         self.stdio, self.write = stdio_transport
         self.session = await self.exit_stack.enter_async_context(ClientSession(self.stdio, self.write))
-
         await self.session.initialize()
-
         response = await self.session.list_tools()
-        tools = response.tools
-        print("\nConnected to server with tools:", [tool.name for tool in tools])
+        print("\nConnected to server with tools:", [tool.name for tool in response.tools])
 
     async def process_query(self, query: str) -> str:
-        """Process a query using Gemini and available tools"""
-        
         response = await self.session.list_tools()
         
-        # --- ส่วนที่แก้ไขใหม่ทั้งหมด: สร้าง Schema ที่สะอาดขึ้นมาเอง ---
-        available_tools = []
+        gemini_tools = []
         for tool in response.tools:
-            # 1. สร้างโครง Schema ใหม่ที่ว่างเปล่าและสะอาด
             clean_schema = {
-                "type": "object",
-                "properties": {},
-                "required": tool.inputSchema.get("required", [])
+                "type": "object", "properties": {}, "required": tool.inputSchema.get("required", [])
             }
-            
-            # 2. คัดลอกเฉพาะข้อมูลที่จำเป็นจาก Schema เดิม
             if tool.inputSchema and 'properties' in tool.inputSchema:
                 for prop_name, prop_schema in tool.inputSchema['properties'].items():
                     clean_schema['properties'][prop_name] = {
-                        'type': prop_schema.get('type'),
-                        'description': prop_schema.get('description', '')
+                        'type': prop_schema.get('type'), 'description': prop_schema.get('description', '')
                     }
-
-            # 3. ประกอบร่างเป็น Tool ที่สมบูรณ์โดยใช้ Schema ที่สะอาดแล้ว
-            available_tools.append({
-                "function_declarations": [{
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": clean_schema  # ใช้ Schema ใหม่ที่เราสร้างขึ้น
-                }]
+            gemini_tools.append({
+                "function_declarations": [{"name": tool.name, "description": tool.description, "parameters": clean_schema}]
             })
-        # -----------------------------------------------------------
 
-        chat = self.model.start_chat()
+        # ขั้นตอนที่ 1: ให้ Gemini วางแผนเลือก Tool
+        planning_response = self.model.generate_content(query, tools=gemini_tools)
         
-        response = chat.send_message(
-            query,
-            tools=available_tools
+        # ตรวจสอบว่า AI ต้องการใช้ Tool หรือไม่
+        if not planning_response.candidates[0].content.parts or not planning_response.candidates[0].content.parts[0].function_call:
+             print("[No tool needed. Answering directly...]")
+             return planning_response.text
+
+        # ขั้นตอนที่ 2: ดึงข้อมูลและเรียกใช้ Tool
+        function_call = planning_response.candidates[0].content.parts[0].function_call
+        tool_name = function_call.name
+        tool_args = {key: value for key, value in function_call.args.items()}
+
+        print(f"[Gemini wants to call tool: {tool_name} with args: {tool_args}]")
+        result = await self.session.call_tool(tool_name, tool_args)
+        
+        # --- ส่วนที่แก้ไข (ใช้เทคนิคเดียวกับเพื่อนของคุณ) ---
+        # 3. สร้าง Prompt ใหม่ที่มีทั้งคำถามและผลลัพธ์
+        summary_prompt = (
+            f"คำถามเดิมคือ: '{query}'\n\n"
+            f"ฉันได้ใช้เครื่องมือ '{tool_name}' และได้ผลลัพธ์กลับมาเป็นข้อมูลนี้:\n"
+            f"{result.content}\n\n"
+            f"จากข้อมูลนี้ ช่วยสรุปเป็นคำตอบที่เข้าใจง่ายสำหรับคำถามเดิมให้หน่อย"
         )
         
-        while response.candidates[0].function_calls:
-            function_calls = response.candidates[0].function_calls
-            
-            tool_results = []
-            
-            print(f"[Gemini wants to call tools: {[fc.name for fc in function_calls]}]")
-
-            for fc in function_calls:
-                tool_name = fc.name
-                tool_args = dict(fc.args)
-
-                print(f"[Calling tool {tool_name} with args {tool_args}]")
-                result = await self.session.call_tool(tool_name, tool_args)
-
-                tool_results.append({
-                    "function_response": {
-                        "name": tool_name,
-                        "response": {
-                            "content": result.content
-                        }
-                    }
-                })
-
-            response = chat.send_message(
-                tool_results,
-                tools=available_tools
-            )
-
-        return response.text
+        # 4. ส่ง Prompt ใหม่ไปให้ Gemini สรุป
+        print("[Summarizing result...]")
+        summary_response = self.model.generate_content(summary_prompt)
+        # -----------------------------------------------
+        
+        return summary_response.text
 
     async def chat_loop(self):
-        """Run an interactive chat loop"""
         print("\nMCP Client Started with Gemini!")
         print("Type your queries or 'quit' to exit.")
-
         while True:
             try:
                 query = input("\nQuery: ").strip()
-
                 if query.lower() == 'quit':
                     break
-
                 response = await self.process_query(query)
                 print("\n" + response)
-
             except Exception as e:
                 print(f"\nError: {str(e)}")
 
     async def cleanup(self):
-        """Clean up resources"""
         await self.exit_stack.aclose()
 
 async def main():
     if len(sys.argv) < 2:
         print("Usage: python client.py <path_to_server_script>")
         sys.exit(1)
-
     client = MCPClient()
     try:
         await client.connect_to_server(sys.argv[1])
